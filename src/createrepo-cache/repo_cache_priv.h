@@ -82,6 +82,7 @@ struct _cra_RepoCache
   gchar * repomd_old_path;
   gchar * repomd_asc_path;
   GList * packages;
+  GList * keys;
   cra_RepoFlags flags;
   cr_Repomd * repomd;
   cr_Repomd * repomd_old;
