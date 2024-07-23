@@ -778,6 +778,7 @@ cra_repo_cache_load(cra_RepoCache * repo, gpgme_ctx_t gpgme)
   gpgme_error_t gpg_rc;
   gpgme_verify_result_t gpg_res;
   gpgme_signature_t gpg_sig;
+  GList * gpg_keys;
 
 
   ml = cr_parse_repomd(repo->repomd_path, repo->path, 1);
@@ -815,8 +816,29 @@ cra_repo_cache_load(cra_RepoCache * repo, gpgme_ctx_t gpgme)
     gpg_res = gpgme_op_verify_result(gpgme);
     gpg_sig = gpg_res->signatures;
     while (gpg_sig) {
+      // TODO(nuclearsandwich) I have a question about this instead of gpg_sig->status & GPGME_SIGSUM_VALID
       if (!gpg_sig->status) {
-        break;
+        if (gpg_sig->key) {
+          gpgme_key_ref(gpg_sig->key);
+          if (gpg_keys) {
+            gpg_keys->next = g_list_alloc();
+            gpg_keys->next->data = gpg_sig->key;
+            gpg_keys = gpg_keys->next;
+
+          } else {
+            gpg_keys = g_list_alloc();
+            gpg_keys->data = gpg_sig->key;
+            repo->keys = gpg_keys;
+          }
+          // repo->key = gpg_sig->key;
+        } else {
+          gpg_rc = gpgme_get_key(gpgme, gpg_sig->fpr, &repo->key, 0);
+          if (gpg_rc) {
+            // This is curious. The signature was successfully verified, but we can't find the
+            // public key that was used.
+            g_warning("Failed to find key '%s': %s", gpg_sig->fpr, gpgme_strerror(gpg_rc));
+          }
+        }
       }
       gpg_sig = gpg_sig->next;
     }
@@ -827,17 +849,6 @@ cra_repo_cache_load(cra_RepoCache * repo, gpgme_ctx_t gpgme)
       return CRE_BADXMLREPOMD;
     }
 
-    if (gpg_sig->key) {
-      gpgme_key_ref(gpg_sig->key);
-      repo->key = gpg_sig->key;
-    } else {
-      gpg_rc = gpgme_get_key(gpgme, gpg_sig->fpr, &repo->key, 0);
-      if (gpg_rc) {
-        // This is curious. The signature was successfully verified, but we can't find the
-        // public key that was used.
-        g_warning("Failed to find key '%s': %s", gpg_sig->fpr, gpgme_strerror(gpg_rc));
-      }
-    }
 
     g_debug("Successfully verified '%s' with key '%s'", repo->repomd_path, gpg_sig->fpr);
   }
@@ -1944,16 +1955,23 @@ cra_repo_commit_worker(cra_RepoFlushTask * task, void * user_data)
 
 static gpg_error_t
 cra_sign_repomd(
-  gpgme_ctx_t gpgme, gpgme_key_t key, const char * repomd_path, const char * repomd_asc_path)
+  gpgme_ctx_t gpgme, GList * keys, const char * repomd_path, const char * repomd_asc_path)
 {
   FILE * f;
   gpg_error_t rc;
   gpgme_data_t repomd_asc;
   gpgme_data_t repomd_xml;
+  gpgme_key_t key;
 
-  rc = gpgme_signers_add(gpgme, key);
-  if (rc) {
-    return rc;
+  while (keys) {
+    key = keys->data;
+    rc = gpgme_signers_add(gpgme, key);
+    if (rc) {
+      g_warning("Failed to add signing key %s: %s", key->fpr, gpg_strerror(rc));
+      gpgme_signers_clear(gpgme);
+      return rc;
+    }
+    keys = keys->next;
   }
 
   f = fopen(repomd_asc_path, "wb");
@@ -2082,9 +2100,9 @@ cra_cache_flush(cra_Cache * cache)
       g_slist_free_full(dirty, (GDestroyNotify)cra_repo_flush_task_clear);
       return rc;
     }
-    if (task->repo->key) {
+    if (task->repo->keys) {
       if (cra_sign_repomd(
-          cache->gpgme, task->repo->key, task->repomd_path, task->repomd_asc_path))
+          cache->gpgme, task->repo->keys, task->repomd_path, task->repomd_asc_path))
       {
         rc = CRE_BADXMLREPOMD;
         g_slist_free_full(dirty, (GDestroyNotify)cra_repo_flush_task_clear);
