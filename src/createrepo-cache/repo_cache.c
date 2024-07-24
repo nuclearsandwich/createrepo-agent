@@ -162,6 +162,7 @@ static void
 cra_repo_cache_free(cra_RepoCache * repo)
 {
   size_t i;
+  GList * gpg_keys;
 
   if (!repo) {
     return;
@@ -177,6 +178,16 @@ cra_repo_cache_free(cra_RepoCache * repo)
     g_free(repo->flush_task.xml[i].path);
   }
 
+
+  gpg_keys = repo->keys;
+  while (gpg_keys) {
+    gpgme_key_unref(gpg_keys->data);
+    gpg_keys->data = NULL;
+    gpg_keys = gpg_keys->next;
+  }
+  gpg_keys = NULL;
+  g_list_free(repo->keys);
+
   g_hash_table_destroy(repo->pending_rems);
   g_hash_table_destroy(repo->pending_adds);
   g_hash_table_destroy(repo->depends);
@@ -185,7 +196,6 @@ cra_repo_cache_free(cra_RepoCache * repo)
   g_hash_table_destroy(repo->hrefs);
   g_free(repo->flush_task.repomd_asc_path);
   g_free(repo->flush_task.repomd_path);
-  gpgme_key_unref(repo->key);
   g_free(repo->repomd_asc_path);
   g_free(repo->repomd_old_path);
   g_free(repo->repomd_path);
@@ -815,22 +825,19 @@ cra_repo_cache_load(cra_RepoCache * repo, gpgme_ctx_t gpgme)
 
     gpg_res = gpgme_op_verify_result(gpgme);
     gpg_sig = gpg_res->signatures;
+    gpg_keys = repo->keys;
     while (gpg_sig) {
       // TODO(nuclearsandwich) I have a question about this instead of gpg_sig->status & GPGME_SIGSUM_VALID
       if (!gpg_sig->status) {
         if (gpg_sig->key) {
           gpgme_key_ref(gpg_sig->key);
           if (gpg_keys) {
-            gpg_keys->next = g_list_alloc();
-            gpg_keys->next->data = gpg_sig->key;
-            gpg_keys = gpg_keys->next;
-
+            gpg_keys = g_list_prepend(gpg_keys, gpg_sig->key);
           } else {
+            // TBD is it worth waiting to allocate or should we just create the list with the repo_cache init?
             gpg_keys = g_list_alloc();
-            gpg_keys->data = gpg_sig->key;
-            repo->keys = gpg_keys;
+            gpg_keys = g_list_prepend(gpg_keys, gpg_sig->key);
           }
-          // repo->key = gpg_sig->key;
         } else {
           gpg_rc = gpgme_get_key(gpgme, gpg_sig->fpr, &repo->key, 0);
           if (gpg_rc) {
@@ -842,6 +849,11 @@ cra_repo_cache_load(cra_RepoCache * repo, gpgme_ctx_t gpgme)
       }
       gpg_sig = gpg_sig->next;
     }
+
+    // TODO(nuclearsandwich) maybe we don't care about order. This only works
+    // if we assume the list was empty before cra_repo_cache_load was called.
+    gpg_keys = g_list_reverse(gpg_keys);
+    repo->keys = gpg_keys;
 
     if (!gpg_sig) {
       g_warning("No signatures could be verified in '%s'", repo->repomd_asc_path);
