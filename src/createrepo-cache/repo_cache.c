@@ -156,6 +156,8 @@ cra_repo_cache_clear(cra_RepoCache * repo)
 
   cr_repomd_free(repo->repomd_old);
   repo->repomd_old = NULL;
+
+  // TODO(nuclearsandwich) gpg_key_t was not cleared here. Should keys be?
 }
 
 static void
